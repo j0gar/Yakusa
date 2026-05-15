@@ -57,13 +57,13 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.commandName === 'panelrobos') {
 
-    let texto = '## Yakuza Tanaka\\n\\n';
+    let texto = '## Yakuza Tanaka\n\n';
 
-    for (const [nombre, datos] of Object.entries(robos)) {
-      texto += `• ${nombre}: ${datos.actual}/${datos.max}\\n`;
-    }
+	for (const [nombre, datos] of Object.entries(robos)) {
+  texto += `• ${nombre}: ${datos.actual}/${datos.max}\n`;
+	}
 
-    await interaction.reply(texto);
+	await interaction.reply(texto);
   }
 });
 
