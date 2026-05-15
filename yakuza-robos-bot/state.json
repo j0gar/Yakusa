@@ -1,0 +1,12 @@
+{
+  "counts": {},
+  "panelChannelId": null,
+  "panelMessageId": null,
+  "alertChannelId": null,
+  "alertMessageId": null,
+  "alertWebhookMessageId": null,
+  "lastDailyReset": null,
+  "lastWeeklyReset": null,
+  "lastBiweeklyReset": null,
+  "biweeklyCycleStart": null
+}

@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
+const cron = require('node-cron');
 const {
   Client,
   GatewayIntentBits,
@@ -12,242 +13,315 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  Events,
 } = require('discord.js');
 
-const DATA_FILE = path.join(__dirname, 'data.json');
-const TZ = 'Europe/Madrid';
+const TZ = process.env.TZ || 'Europe/Madrid';
+const STATE_PATH = path.join(__dirname, 'state.json');
 
-const ROBOS = [
-  { id: 'desguaces', nombre: 'Desguaces', limite: 4, tipo: 'diario' },
-  { id: 'atm', nombre: 'ATM', limite: 3, tipo: 'diario' },
-  { id: 'saqueos_vehiculos', nombre: 'Saqueos de vehículos', limite: 8, tipo: 'diario' },
-  { id: 'tienda_ropa', nombre: 'Tienda de ropa', limite: 1, tipo: 'diario' },
-  { id: 'badulaques', nombre: 'Badulaques / licorerías', limite: 1, tipo: 'diario' },
-  { id: 'casa', nombre: 'Casa', limite: 1, tipo: 'diario' },
-
-  { id: 'farmacia', nombre: 'Farmacia', limite: 2, tipo: 'semanal' },
-  { id: 'pawn', nombre: 'Pawn', limite: 2, tipo: 'semanal' },
-  { id: 'ammu', nombre: 'Ammu', limite: 1, tipo: 'semanal' },
-  { id: 'almacen_lvl1', nombre: 'Almacenes lvl1', limite: 1, tipo: 'semanal' },
-  { id: 'almacen_lvl2', nombre: 'Almacenes lvl2', limite: 1, tipo: 'semanal' },
-  { id: 'blindado', nombre: 'Blindado', limite: 1, tipo: 'semanal' },
-
-  { id: 'fleeca', nombre: 'Fleeca', limite: 1, tipo: 'quincenal' },
-  { id: 'joyeria', nombre: 'Joyería', limite: 1, tipo: 'quincenal' },
+const robberies = [
+  { id: 'desguaces', name: 'Desguaces', limit: 4, period: 'daily', emoji: '🔧' },
+  { id: 'atm', name: 'ATM', limit: 3, period: 'daily', emoji: '💳' },
+  { id: 'saqueos_vehiculos', name: 'Saqueos de vehículos', limit: 8, period: 'daily', emoji: '🚗' },
+  { id: 'tienda_ropa', name: 'Tienda de ropa', limit: 1, period: 'daily', emoji: '👕' },
+  { id: 'badulaques', name: 'Badulaques/licorerías', limit: 1, period: 'daily', emoji: '🏪' },
+  { id: 'casa', name: 'Casa', limit: 1, period: 'daily', emoji: '🏠' },
+  { id: 'farmacia', name: 'Farmacia', limit: 2, period: 'weekly', emoji: '💊' },
+  { id: 'pawn', name: 'Pawn', limit: 2, period: 'weekly', emoji: '💍' },
+  { id: 'ammu', name: 'Ammu', limit: 1, period: 'weekly', emoji: '🧰' },
+  { id: 'almacen_lvl1', name: 'Almacenes lvl1', limit: 1, period: 'weekly', emoji: '📦' },
+  { id: 'almacen_lvl2', name: 'Almacenes lvl2', limit: 1, period: 'weekly', emoji: '📦' },
+  { id: 'blindado', name: 'Blindado', limit: 1, period: 'weekly', emoji: '🚚' },
+  { id: 'fleeca', name: 'Fleeca', limit: 1, period: 'biweekly', emoji: '🏦' },
+  { id: 'joyeria', name: 'Joyería', limit: 1, period: 'biweekly', emoji: '💎' },
 ];
 
-function loadData() {
-  if (!fs.existsSync(DATA_FILE)) {
-    const base = {
-      counts: Object.fromEntries(ROBOS.map(r => [r.id, 0])),
-      lastReset: { diario: '', semanal: '', quincenal: '' },
-      logs: [],
-      panel: null,
-    };
-    fs.writeFileSync(DATA_FILE, JSON.stringify(base, null, 2));
-    return base;
-  }
-  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-}
-
-function saveData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
-
-function madridParts(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: TZ,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hour12: false, weekday: 'short',
-  }).formatToParts(date);
-  const obj = Object.fromEntries(parts.map(p => [p.type, p.value]));
+function defaultState() {
   return {
-    ymd: `${obj.year}-${obj.month}-${obj.day}`,
-    hour: Number(obj.hour),
-    minute: Number(obj.minute),
-    weekday: obj.weekday,
-    weekKey: getWeekKey(date),
+    counts: {},
+    panelChannelId: null,
+    panelMessageId: null,
+    alertChannelId: null,
+    alertMessageId: null,
+    alertWebhookMessageId: null,
+    lastDailyReset: null,
+    lastWeeklyReset: null,
+    lastBiweeklyReset: null,
+    biweeklyCycleStart: null,
   };
 }
 
-function getWeekKey(date = new Date()) {
-  const d = new Date(date.toLocaleString('en-US', { timeZone: TZ }));
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
-  const week1 = new Date(d.getFullYear(), 0, 4);
-  return `${d.getFullYear()}-W${1 + Math.round(((d - week1) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7)}`;
-}
-
-function getBiweekKey(date = new Date()) {
-  const week = Number(getWeekKey(date).split('W')[1]);
-  const year = getWeekKey(date).split('-W')[0];
-  return `${year}-B${Math.floor((week - 1) / 2) + 1}`;
-}
-
-function resetIfNeeded(data) {
-  const now = madridParts();
-  if (now.hour < 4) return false;
-
-  let changed = false;
-
-  if (data.lastReset.diario !== now.ymd) {
-    ROBOS.filter(r => r.tipo === 'diario').forEach(r => data.counts[r.id] = 0);
-    data.lastReset.diario = now.ymd;
-    changed = true;
+function loadState() {
+  try {
+    if (!fs.existsSync(STATE_PATH)) return defaultState();
+    return { ...defaultState(), ...JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')) };
+  } catch (error) {
+    console.error('No se pudo leer state.json:', error);
+    return defaultState();
   }
-
-  if (now.weekday === 'Sun' && data.lastReset.semanal !== now.weekKey) {
-    ROBOS.filter(r => r.tipo === 'semanal').forEach(r => data.counts[r.id] = 0);
-    data.lastReset.semanal = now.weekKey;
-    changed = true;
-  }
-
-  const biweekKey = getBiweekKey();
-  if (now.weekday === 'Sun' && data.lastReset.quincenal !== biweekKey) {
-    ROBOS.filter(r => r.tipo === 'quincenal').forEach(r => data.counts[r.id] = 0);
-    data.lastReset.quincenal = biweekKey;
-    changed = true;
-  }
-
-  if (changed) saveData(data);
-  return changed;
 }
 
-function bar(count, limit) {
-  const full = '█'.repeat(Math.min(count, limit));
-  const empty = '░'.repeat(Math.max(limit - count, 0));
-  return `${full}${empty}`;
+let state = loadState();
+
+function saveState() {
+  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
 }
 
-function section(data, tipo) {
-  return ROBOS.filter(r => r.tipo === tipo).map(r => {
-    const c = data.counts[r.id] || 0;
-    const ok = c >= r.limite ? '✅' : '⬜';
-    return `${ok} **${r.nombre}** — ${c}/${r.limite} \`${bar(c, r.limite)}\``;
+function getCount(id) {
+  return state.counts[id] || 0;
+}
+
+function setCount(id, value) {
+  const robbery = robberies.find((r) => r.id === id);
+  state.counts[id] = Math.max(0, Math.min(value, robbery.limit));
+  saveState();
+}
+
+function resetPeriod(period) {
+  for (const robbery of robberies.filter((r) => r.period === period)) {
+    state.counts[robbery.id] = 0;
+  }
+  saveState();
+}
+
+function todayKey() {
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
+function buildPanelEmbed() {
+  const byPeriod = {
+    daily: robberies.filter((r) => r.period === 'daily'),
+    weekly: robberies.filter((r) => r.period === 'weekly'),
+    biweekly: robberies.filter((r) => r.period === 'biweekly'),
+  };
+
+  const format = (items) => items.map((r) => {
+    const count = getCount(r.id);
+    const done = count >= r.limit;
+    return `${done ? '✅' : '⬜'} ${r.emoji} **${r.name}** — ${count}/${r.limit}`;
   }).join('\n');
-}
 
-function makeEmbed(data) {
   return new EmbedBuilder()
     .setTitle('🐉 Yakuza Tanaka — Checklist de robos')
-    .setColor(0x8b0000)
-    .setDescription('Pulsa el botón del robo realizado para sumarlo. Usa “Restar” si alguien se equivoca.')
+    .setDescription('Pulsa los botones para marcar cada robo realizado.')
     .addFields(
-      { name: '📅 Robos diarios', value: section(data, 'diario') },
-      { name: '🗓️ Robos semanales', value: section(data, 'semanal') },
-      { name: '⛩️ Robos cada 2 semanas', value: section(data, 'quincenal') },
-      { name: '🔄 Reinicios', value: 'Diarios: **04:00**\nSemanales: **domingo 04:00**\nQuincenales: **domingo 04:00**' }
+      { name: '📅 Diarios', value: format(byPeriod.daily) || 'Nada', inline: false },
+      { name: '🗓️ Semanales', value: format(byPeriod.weekly) || 'Nada', inline: false },
+      { name: '⏳ Cada 2 semanas', value: format(byPeriod.biweekly) || 'Nada', inline: false },
     )
-    .setFooter({ text: 'Sistema de control interno' })
+    .setFooter({ text: 'Reset diario 04:00 · Reset semanal domingo 04:00' })
+    .setColor(0x8b0000)
     .setTimestamp();
 }
 
-function makeRows() {
+function buildRows() {
   const rows = [];
-  let current = [];
-  for (const r of ROBOS) {
-    current.push(new ButtonBuilder()
-      .setCustomId(`add:${r.id}`)
-      .setLabel(`+ ${r.nombre}`.slice(0, 80))
-      .setStyle(ButtonStyle.Secondary));
-    if (current.length === 5) {
-      rows.push(new ActionRowBuilder().addComponents(current));
-      current = [];
+  let current = new ActionRowBuilder();
+
+  robberies.forEach((r, index) => {
+    if (index > 0 && index % 5 === 0) {
+      rows.push(current);
+      current = new ActionRowBuilder();
     }
-  }
-  if (current.length) rows.push(new ActionRowBuilder().addComponents(current));
 
-  rows.push(new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('undo').setLabel('Restar último').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId('refresh').setLabel('Actualizar').setStyle(ButtonStyle.Primary)
-  ));
+    const count = getCount(r.id);
+    current.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`robbery:${r.id}`)
+        .setLabel(`${r.name} ${count}/${r.limit}`.slice(0, 80))
+        .setEmoji(r.emoji)
+        .setStyle(count >= r.limit ? ButtonStyle.Success : ButtonStyle.Secondary)
+        .setDisabled(count >= r.limit),
+    );
+  });
 
-  return rows.slice(0, 5);
+  if (current.components.length > 0) rows.push(current);
+  return rows;
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+function pendingRobberies(periods = ['daily', 'weekly', 'biweekly']) {
+  return robberies.filter((r) => periods.includes(r.period) && getCount(r.id) < r.limit);
+}
 
-async function updatePanel() {
-  const data = loadData();
-  resetIfNeeded(data);
-  if (!data.panel) return;
+function buildAlertEmbed(title = '⚠️ Robos pendientes') {
+  const pendingDaily = pendingRobberies(['daily']);
+  const pendingWeekly = pendingRobberies(['weekly']);
+  const pendingBiweekly = pendingRobberies(['biweekly']);
+
+  const format = (items) => items.length
+    ? items.map((r) => `${r.emoji} **${r.name}** — ${getCount(r.id)}/${r.limit}`).join('\n')
+    : '✅ Todo completado';
+
+  return new EmbedBuilder()
+    .setTitle(title)
+    .setDescription('Resumen automático de la actividad pendiente de **Yakuza Tanaka**.')
+    .addFields(
+      { name: '📅 Diarios', value: format(pendingDaily), inline: false },
+      { name: '🗓️ Semanales', value: format(pendingWeekly), inline: false },
+      { name: '⏳ Cada 2 semanas', value: format(pendingBiweekly), inline: false },
+    )
+    .setColor(pendingDaily.length || pendingWeekly.length || pendingBiweekly.length ? 0xff9900 : 0x2ecc71)
+    .setFooter({ text: 'Mensaje de alertas único: se edita, no se spamea.' })
+    .setTimestamp();
+}
+
+async function updatePanel(client) {
+  if (!state.panelChannelId || !state.panelMessageId) return;
+  try {
+    const channel = await client.channels.fetch(state.panelChannelId);
+    const msg = await channel.messages.fetch(state.panelMessageId);
+    await msg.edit({ embeds: [buildPanelEmbed()], components: buildRows() });
+  } catch (error) {
+    console.error('No se pudo actualizar el panel:', error.message);
+  }
+}
+
+async function upsertAlert(client, title = '⚠️ Robos pendientes') {
+  const embed = buildAlertEmbed(title);
+  const channelId = process.env.ALERT_CHANNEL_ID || state.alertChannelId || state.panelChannelId;
+  if (!channelId) return;
 
   try {
-    const channel = await client.channels.fetch(data.panel.channelId);
-    const message = await channel.messages.fetch(data.panel.messageId);
-    await message.edit({ embeds: [makeEmbed(data)], components: makeRows() });
-  } catch (e) {
-    console.error('No pude actualizar el panel:', e.message);
+    const channel = await client.channels.fetch(channelId);
+
+    if (state.alertMessageId) {
+      try {
+        const msg = await channel.messages.fetch(state.alertMessageId);
+        await msg.edit({ embeds: [embed] });
+        return;
+      } catch (error) {
+        console.error('No se pudo editar la alerta anterior. Creando una nueva:', error.message);
+        state.alertMessageId = null;
+        saveState();
+      }
+    }
+
+    const sent = await channel.send({ embeds: [embed] });
+    state.alertChannelId = channel.id;
+    state.alertMessageId = sent.id;
+    saveState();
+  } catch (error) {
+    console.error('No se pudo crear/actualizar la alerta:', error.message);
   }
 }
 
-client.once(Events.ClientReady, async () => {
-  console.log(`Conectado como ${client.user.tag}`);
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
 
-  const commands = [
-    new SlashCommandBuilder()
-      .setName('panelrobos')
-      .setDescription('Crea el panel de robos de Yakuza Tanaka'),
-  ].map(c => c.toJSON());
+client.once('ready', async () => {
+  console.log(`Bot conectado como ${client.user.tag}`);
 
-  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
-  await rest.put(
-    Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-    { body: commands }
-  );
+  cron.schedule('0 4 * * *', async () => {
+    const key = todayKey();
+    if (state.lastDailyReset === key) return;
+    resetPeriod('daily');
+    state.lastDailyReset = key;
+    saveState();
+    await updatePanel(client);
+    await upsertAlert(client, '🔄 Reinicio diario realizado');
+  }, { timezone: TZ });
 
-  setInterval(updatePanel, 60 * 1000);
-  updatePanel();
-});
-
-client.on(Events.InteractionCreate, async interaction => {
-  if (interaction.isChatInputCommand() && interaction.commandName === 'panelrobos') {
-    const data = loadData();
-    resetIfNeeded(data);
-    const msg = await interaction.channel.send({ embeds: [makeEmbed(data)], components: makeRows() });
-    data.panel = { channelId: msg.channel.id, messageId: msg.id };
-    saveData(data);
-    await interaction.reply({ content: 'Panel de robos creado.', ephemeral: true });
-    return;
-  }
-
-  if (!interaction.isButton()) return;
-
-  const data = loadData();
-  resetIfNeeded(data);
-
-  if (interaction.customId.startsWith('add:')) {
-    const id = interaction.customId.split(':')[1];
-    const robo = ROBOS.find(r => r.id === id);
-    if (!robo) return interaction.reply({ content: 'Robo no encontrado.', ephemeral: true });
-
-    const current = data.counts[id] || 0;
-    if (current >= robo.limite) {
-      return interaction.reply({ content: `${robo.nombre} ya está completo: ${current}/${robo.limite}.`, ephemeral: true });
+  cron.schedule('0 4 * * 0', async () => {
+    const key = todayKey();
+    if (state.lastWeeklyReset !== key) {
+      resetPeriod('weekly');
+      state.lastWeeklyReset = key;
     }
 
-    data.counts[id] = current + 1;
-    data.logs.push({ id, userId: interaction.user.id, userTag: interaction.user.tag, at: new Date().toISOString() });
-    saveData(data);
-    await interaction.update({ embeds: [makeEmbed(data)], components: makeRows() });
-    return;
-  }
+    if (!state.biweeklyCycleStart) state.biweeklyCycleStart = key;
+    const lastBi = state.lastBiweeklyReset;
+    const shouldBiweeklyReset = !lastBi || ((Date.now() - new Date(`${lastBi}T04:00:00`).getTime()) >= 13 * 24 * 60 * 60 * 1000);
+    if (shouldBiweeklyReset && state.lastBiweeklyReset !== key) {
+      resetPeriod('biweekly');
+      state.lastBiweeklyReset = key;
+    }
 
-  if (interaction.customId === 'undo') {
-    const last = data.logs.pop();
-    if (!last) return interaction.reply({ content: 'No hay nada que restar.', ephemeral: true });
-    data.counts[last.id] = Math.max((data.counts[last.id] || 0) - 1, 0);
-    saveData(data);
-    await interaction.update({ embeds: [makeEmbed(data)], components: makeRows() });
-    return;
-  }
+    saveState();
+    await updatePanel(client);
+    await upsertAlert(client, '🔄 Reinicio semanal realizado');
+  }, { timezone: TZ });
 
-  if (interaction.customId === 'refresh') {
-    saveData(data);
-    await interaction.update({ embeds: [makeEmbed(data)], components: makeRows() });
+  cron.schedule('0 20 * * *', async () => {
+    await upsertAlert(client, '⚠️ Aviso de robos pendientes');
+  }, { timezone: TZ });
+
+  cron.schedule('30 3 * * *', async () => {
+    await upsertAlert(client, '🚨 Último aviso antes del reset diario');
+  }, { timezone: TZ });
+});
+
+client.on('interactionCreate', async (interaction) => {
+  try {
+    if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'panelrobos') {
+        const sent = await interaction.channel.send({ embeds: [buildPanelEmbed()], components: buildRows() });
+        state.panelChannelId = interaction.channel.id;
+        state.panelMessageId = sent.id;
+        if (!state.alertChannelId) state.alertChannelId = interaction.channel.id;
+        saveState();
+        await interaction.reply({ content: 'Panel de robos creado.', ephemeral: true });
+        return;
+      }
+
+      if (interaction.commandName === 'alertarobos') {
+        state.alertChannelId = interaction.channel.id;
+        saveState();
+        await upsertAlert(client, '⚠️ Robos pendientes');
+        await interaction.reply({ content: 'Mensaje único de alertas creado/actualizado.', ephemeral: true });
+        return;
+      }
+
+      if (interaction.commandName === 'resetrobos') {
+        resetPeriod('daily');
+        resetPeriod('weekly');
+        resetPeriod('biweekly');
+        await updatePanel(client);
+        await upsertAlert(client, '🔄 Reset manual realizado');
+        await interaction.reply({ content: 'Robos reiniciados.', ephemeral: true });
+        return;
+      }
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('robbery:')) {
+      const id = interaction.customId.split(':')[1];
+      const robbery = robberies.find((r) => r.id === id);
+      if (!robbery) return interaction.reply({ content: 'Robo no encontrado.', ephemeral: true });
+
+      const count = getCount(id);
+      if (count >= robbery.limit) {
+        return interaction.reply({ content: 'Ese robo ya está completado.', ephemeral: true });
+      }
+
+      setCount(id, count + 1);
+      await interaction.update({ embeds: [buildPanelEmbed()], components: buildRows() });
+      await upsertAlert(client, '⚠️ Robos pendientes');
+    }
+  } catch (error) {
+    console.error(error);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: 'Ha ocurrido un error.', ephemeral: true }).catch(() => {});
+    }
   }
 });
 
-client.login(process.env.TOKEN);
+async function registerCommands() {
+  const commands = [
+    new SlashCommandBuilder().setName('panelrobos').setDescription('Crea el panel de checklist de robos'),
+    new SlashCommandBuilder().setName('alertarobos').setDescription('Crea o actualiza el mensaje único de alertas en este canal'),
+    new SlashCommandBuilder().setName('resetrobos').setDescription('Reinicia manualmente todos los robos'),
+  ].map((cmd) => cmd.toJSON());
+
+  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+  await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: commands });
+  console.log('Comandos registrados.');
+}
+
+if (!process.env.TOKEN || !process.env.CLIENT_ID || !process.env.GUILD_ID) {
+  console.error('Faltan TOKEN, CLIENT_ID o GUILD_ID en variables de entorno.');
+  process.exit(1);
+}
+
+registerCommands()
+  .then(() => client.login(process.env.TOKEN))
+  .catch((error) => {
+    console.error('Error iniciando el bot:', error);
+    process.exit(1);
+  });

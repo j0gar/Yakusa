@@ -1,11 +1,15 @@
-BOT CHECKLIST ROBOS - Yakuza Tanaka
+Yakuza Tanaka - Bot de robos
 
-1) Renombra .env.example a .env
-2) Rellena TOKEN, CLIENT_ID y GUILD_ID
-3) Sube el ZIP a Discloud
-4) Usa /panelrobos en el canal donde quieras el panel
+Comandos:
+/panelrobos -> crea el panel principal de robos.
+/alertarobos -> crea o actualiza el mensaje unico de alertas en ese canal.
+/resetrobos -> reinicia todo manualmente.
 
-Reset:
-- Diarios: cada día a las 04:00 hora de Madrid
-- Semanales: domingo a las 04:00 hora de Madrid
-- Quincenales: domingo cada 2 semanas a las 04:00 hora de Madrid
+Alertas:
+- 20:00 aviso diario.
+- 03:30 ultimo aviso antes del reset.
+- Reset diario a las 04:00.
+- Reset semanal domingo a las 04:00.
+
+Importante:
+El mensaje de alertas NO se spamea. Se edita siempre el mismo mensaje.
