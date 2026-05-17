@@ -245,14 +245,14 @@ async function checkResetsAndAlerts() {
   const min = d.getMinutes();
   const today = isoDate(d);
 
-  if (hour === 4 && min === 0 && data.lastDailyReset !== today) {
+  if (hour === 1 && min === 0 && data.lastDailyReset !== today) {
     resetGroup(data.daily);
     data.lastDailyReset = today;
     saveData();
     await updatePanel();
   }
 
-  if (d.getDay() === 0 && hour === 4 && min === 0 && data.lastWeeklyReset !== today) {
+  if (d.getDay() === 1 && hour === 0 && min === 0 && data.lastWeeklyReset !== today) {
     resetGroup(data.weekly);
     data.lastWeeklyReset = today;
 
